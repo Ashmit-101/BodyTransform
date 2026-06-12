@@ -13,7 +13,6 @@ import {
   Image,
   Pressable,
   Dimensions,
-  Platform,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -169,7 +168,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
   },

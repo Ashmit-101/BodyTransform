@@ -10,7 +10,6 @@ import {
   Pressable,
   ScrollView,
   Alert,
-  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, typography, spacing, radius } from '../theme/theme';
@@ -36,6 +35,7 @@ export default function SettingsScreen({ onRequestOnboarding }) {
   const [ghostPhotos, setGhostPhotos] = useState({});
   const [referenceIds, setReferenceIds] = useState({});
   const [referenceKeypoints, setReferenceKeypoints] = useState({});
+  const [referenceSources, setReferenceSources] = useState({});
   const [poseTypes, setPoseTypes] = useState({});
   const [loadingPoseId, setLoadingPoseId] = useState(null);
 
@@ -68,24 +68,29 @@ export default function SettingsScreen({ onRequestOnboarding }) {
       const nextGhostPhotos = {};
       const nextReferenceIds = {};
       const nextReferenceKeypoints = {};
+      const nextReferenceSources = {};
       const nextPoseTypes = {};
 
       for (const pose of allPoses) {
         const ghostPhoto = await getGhostPhotoForPose(pose.id);
         const referencePhotoId = await getPoseReferencePhotoId(pose.id);
         const referenceData = await getPoseReferenceData(pose.id);
-        const resolvedPoseType = referenceData?.poseType || getPoseTypeForPose(pose);
+        const resolvedPoseType = getPoseTypeForPose(pose);
         if (ghostPhoto) nextGhostPhotos[pose.id] = ghostPhoto;
         if (referencePhotoId) nextReferenceIds[pose.id] = referencePhotoId;
         nextPoseTypes[pose.id] = resolvedPoseType;
-        if (referenceData?.source === 'detected' && referenceData?.keypoints) {
+        if (referenceData?.keypoints) {
           nextReferenceKeypoints[pose.id] = referenceData.keypoints;
+        }
+        if (referenceData?.source) {
+          nextReferenceSources[pose.id] = referenceData.source;
         }
       }
 
       setGhostPhotos(nextGhostPhotos);
       setReferenceIds(nextReferenceIds);
       setReferenceKeypoints(nextReferenceKeypoints);
+      setReferenceSources(nextReferenceSources);
       setPoseTypes(nextPoseTypes);
     } catch (err) {
       console.error('Failed to load pose references:', err);
@@ -100,7 +105,7 @@ export default function SettingsScreen({ onRequestOnboarding }) {
       if (result.status === 'permission_denied') {
         Alert.alert(
           'Permission Required',
-          'Please allow photo library access to choose a default pose reference photo.',
+          'Please allow photo library access to choose a bodybuilding reference photo for this pose.',
         );
         return;
       }
@@ -122,6 +127,10 @@ export default function SettingsScreen({ onRequestOnboarding }) {
       setReferenceKeypoints((prev) => ({
         ...prev,
         [pose.id]: result.referenceKeypoints,
+      }));
+      setReferenceSources((prev) => ({
+        ...prev,
+        [pose.id]: result.referenceSource,
       }));
       setPoseTypes((prev) => ({
         ...prev,
@@ -191,7 +200,10 @@ export default function SettingsScreen({ onRequestOnboarding }) {
           title="Pose Guidance"
           subtitle="Reference skeleton + live joint feedback"
           onPress={() => {
-            Alert.alert('Pose Guidance', 'Use the camera screen toggle to hide or show the alignment overlay for the active pose.');
+            Alert.alert(
+              'Pose Guidance',
+              'Use the camera screen toggle to hide or show the alignment overlay for the active pose.',
+            );
           }}
         />
       </View>
@@ -215,7 +227,15 @@ export default function SettingsScreen({ onRequestOnboarding }) {
           const ghostPhoto = ghostPhotos[pose.id];
           const hasReference = Boolean(referenceIds[pose.id]);
           const isLoading = loadingPoseId === pose.id;
+          const referenceSource = referenceSources[pose.id];
           const poseLabel = getPoseConfig(poseTypes[pose.id] || getPoseTypeForPose(pose)).label;
+          const referenceStatusLabel = !hasReference
+            ? 'No reference'
+            : referenceKeypoints[pose.id]
+              ? referenceSource === 'template'
+                ? 'Fallback guide'
+                : 'Guide ready'
+              : 'Photo only';
 
           return (
             <View key={pose.id} style={styles.poseReferenceCard}>
@@ -227,9 +247,11 @@ export default function SettingsScreen({ onRequestOnboarding }) {
                     <Text style={styles.poseReferenceSubtitle}>
                       {hasReference
                         ? referenceKeypoints[pose.id]
-                          ? 'Used as the default live alignment reference for this pose'
-                          : 'Reference photo saved. Skeleton overlay is waiting for real pose extraction.'
-                        : 'No saved reference yet. Camera will fall back to the first captured pose photo.'}
+                          ? referenceSource === 'template'
+                            ? 'Saved, but this pose is using a fallback skeleton. Replace it with a clearer bodybuilding reference so alignment tracks your joints better.'
+                            : 'Used as the default live alignment reference for this pose'
+                          : 'Reference photo saved. Re-import it if you want to rebuild the pose guide.'
+                        : 'No saved reference yet. Camera will prompt you to create the first anchor photo for this pose.'}
                     </Text>
                   </View>
                 </View>
@@ -240,7 +262,8 @@ export default function SettingsScreen({ onRequestOnboarding }) {
                 referenceKeypoints={referenceKeypoints[pose.id]}
                 poseLabel={poseLabel}
                 emptyLabel="No reference selected"
-                statusLabel={referenceKeypoints[pose.id] ? 'Pose detected' : 'Photo only'}
+                statusLabel={referenceStatusLabel}
+                referenceSource={referenceSource}
               />
 
               <Pressable
@@ -262,7 +285,7 @@ export default function SettingsScreen({ onRequestOnboarding }) {
                     ? 'Importing…'
                     : hasReference
                       ? 'Replace reference photo'
-                      : 'Import best photo'}
+                      : 'Import reference photo'}
                 </Text>
               </Pressable>
             </View>
@@ -310,7 +333,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxl,
   },
   header: {
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
   },

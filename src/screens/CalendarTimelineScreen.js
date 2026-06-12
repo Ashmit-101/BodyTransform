@@ -16,7 +16,6 @@ import {
   Image,
   Modal,
   Dimensions,
-  Platform,
   ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -285,7 +284,7 @@ export default function CalendarTimelineScreen() {
           </Animated.View>
         ) : (
           <View style={styles.hint}>
-            <Ionicons name="tap-outline" size={28} color={colors.textMuted} />
+            <Ionicons name="hand-left-outline" size={28} color={colors.textMuted} />
             <Text style={styles.hintText}>Tap a day to see your photos</Text>
           </View>
         )}
@@ -375,7 +374,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
   },
@@ -564,7 +563,7 @@ const styles = StyleSheet.create({
   },
   viewerClose: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 36,
+    top: 56,
     right: spacing.md,
     width: 44,
     height: 44,
@@ -576,7 +575,7 @@ const styles = StyleSheet.create({
   },
   viewerCounter: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    top: 60,
     alignSelf: 'center',
     backgroundColor: 'rgba(255,255,255,0.12)',
     paddingHorizontal: spacing.md,
@@ -601,7 +600,7 @@ const styles = StyleSheet.create({
   },
   viewerCaption: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 60 : 40,
+    bottom: 60,
     alignItems: 'center',
     gap: 4,
     paddingHorizontal: spacing.xl,

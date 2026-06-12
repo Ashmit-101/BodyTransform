@@ -2,9 +2,7 @@
  * CameraScreen — Pose alignment camera
  *
  * Replaces the old photo ghost overlay with a reference skeleton and
- * real-time alignment feedback states. This build includes a simulator
- * in development so the UI can be exercised before a native pose
- * detector is integrated into the camera pipeline.
+ * real-time alignment feedback states.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -15,10 +13,10 @@ import {
   Pressable,
   Alert,
   Dimensions,
-  Platform,
   ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -28,29 +26,33 @@ import PoseSkeletonOverlay from '../components/PoseSkeletonOverlay';
 import CaptureButton from '../components/CaptureButton';
 import { colors, typography, spacing, radius } from '../theme/theme';
 import {
-  clearPoseReferenceKeypoints,
   getAllPoses,
   getGhostPhotoForPose,
+  getAppSetting,
   getBooleanAppSetting,
   getPoseReferenceData,
   getPoseReferencePhotoId,
   savePhoto,
+  savePoseReferenceKeypoints,
   setAppSetting,
-  setPoseReferencePhoto,
   setPoseType,
 } from '../database/db';
 import { saveImageToAppDir } from '../utils/storage';
-import { generateGhostAssetForPhoto } from '../utils/backgroundRemoval';
 import {
-  createSimulatedLiveSkeleton,
+  createReferenceKeypoints,
   evaluateAlignment,
   getPoseTypeForPose,
   smoothSkeleton,
 } from '../utils/poseAlignment';
 import { getPoseConfig } from '../constants/poseAlignment';
+import { detectPoseInImage, validateExtractedKeypoints } from '../utils/poseDetection';
+import { saveReferencePhotoForPose } from '../utils/referencePhotos';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GUIDE_SETTING_KEY = 'pose_alignment_enabled';
+const CAMERA_SETUP_KEY = 'camera_setup_mode';
+const CAMERA_FACING_KEY = 'camera_default_facing';
+const LIVE_DETECTION_INTERVAL_MS = 900;
 
 export default function CameraScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -59,6 +61,7 @@ export default function CameraScreen() {
   const [selectedPose, setSelectedPose] = useState(null);
   const [referencePhoto, setReferencePhoto] = useState(null);
   const [referenceKeypoints, setReferenceKeypoints] = useState(null);
+  const [referenceSource, setReferenceSource] = useState(null);
   const [poseType, setSelectedPoseType] = useState('front_double_biceps');
   const [capturing, setCapturing] = useState(false);
   const [showPoseSelector, setShowPoseSelector] = useState(false);
@@ -67,6 +70,8 @@ export default function CameraScreen() {
   const [guidancePreferenceLoaded, setGuidancePreferenceLoaded] = useState(false);
   const [showHelperCard, setShowHelperCard] = useState(true);
   const [liveKeypoints, setLiveKeypoints] = useState(null);
+  const [liveDetectionActive, setLiveDetectionActive] = useState(false);
+  const [cameraSetupMode, setCameraSetupMode] = useState('handheld_front');
   const [alignmentState, setAlignmentState] = useState({
     joints: {},
     progress: 0,
@@ -74,15 +79,20 @@ export default function CameraScreen() {
     visibleCount: 0,
     lockedKeyJointCount: 0,
     requiredKeyJointCount: 0,
+    requiredVisibleKeyJointCount: 0,
+    hasEnoughVisibleJoints: false,
     isPoseAligned: false,
+    trackingState: 'scanning',
     symmetry: { score: null, insights: [] },
   });
   const [successArmed, setSuccessArmed] = useState(true);
 
   const cameraRef = useRef(null);
   const helperTimerRef = useRef(null);
-  const simulatorStateRef = useRef(null);
+  const liveDetectionTimerRef = useRef(null);
   const alignmentHistoryRef = useRef({});
+  const liveSkeletonRef = useRef(null);
+  const liveDetectionInFlightRef = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -95,27 +105,94 @@ export default function CameraScreen() {
   );
 
   useEffect(() => {
+    loadCameraSetup();
+  }, []);
+
+  useEffect(() => {
     if (!guidanceEnabled || !referenceKeypoints) {
       setLiveKeypoints(null);
+      setLiveDetectionActive(false);
       alignmentHistoryRef.current = {};
-      simulatorStateRef.current = null;
+      liveSkeletonRef.current = null;
       return undefined;
     }
 
-    if (!__DEV__) {
-      setLiveKeypoints(null);
-      return undefined;
-    }
+    let cancelled = false;
 
-    const interval = setInterval(() => {
-      const nextRawSkeleton = createSimulatedLiveSkeleton(referenceKeypoints, Date.now());
-      const smoothed = smoothSkeleton(nextRawSkeleton, simulatorStateRef.current);
-      simulatorStateRef.current = smoothed;
-      setLiveKeypoints(smoothed);
-    }, 33);
+    const runDetectionLoop = async () => {
+      if (
+        cancelled ||
+        capturing ||
+        !cameraReady ||
+        !cameraRef.current ||
+        !guidanceEnabled ||
+        !referenceKeypoints ||
+        liveDetectionInFlightRef.current
+      ) {
+        liveDetectionTimerRef.current = setTimeout(runDetectionLoop, LIVE_DETECTION_INTERVAL_MS);
+        return;
+      }
 
-    return () => clearInterval(interval);
-  }, [guidanceEnabled, referenceKeypoints]);
+      liveDetectionInFlightRef.current = true;
+
+      try {
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.35,
+          skipProcessing: true,
+          shutterSound: false,
+        });
+
+        if (!photo?.uri || cancelled) {
+          setLiveDetectionActive(false);
+          return;
+        }
+
+        const detectedKeypoints = await detectPoseInImage(
+          photo.uri,
+          photo.width || SCREEN_WIDTH,
+          photo.height || SCREEN_WIDTH * 1.6
+        );
+
+        if (cancelled) return;
+
+        if (detectedKeypoints && validateExtractedKeypoints(detectedKeypoints, 0.35)) {
+          const smoothedKeypoints = smoothSkeleton(detectedKeypoints, liveSkeletonRef.current, 0.42);
+          liveSkeletonRef.current = smoothedKeypoints;
+          setLiveKeypoints(smoothedKeypoints);
+          setLiveDetectionActive(true);
+        } else {
+          liveSkeletonRef.current = null;
+          setLiveKeypoints(null);
+          setLiveDetectionActive(false);
+        }
+
+        FileSystem.deleteAsync(photo.uri, { idempotent: true }).catch(() => {});
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('Live pose detection failed:', err);
+          liveSkeletonRef.current = null;
+          setLiveKeypoints(null);
+          setLiveDetectionActive(false);
+        }
+      } finally {
+        liveDetectionInFlightRef.current = false;
+        if (!cancelled) {
+          liveDetectionTimerRef.current = setTimeout(runDetectionLoop, LIVE_DETECTION_INTERVAL_MS);
+        }
+      }
+    };
+
+    runDetectionLoop();
+
+    return () => {
+      cancelled = true;
+      if (liveDetectionTimerRef.current) {
+        clearTimeout(liveDetectionTimerRef.current);
+      }
+      liveDetectionInFlightRef.current = false;
+      liveSkeletonRef.current = null;
+    };
+  }, [cameraReady, capturing, guidanceEnabled, referenceKeypoints]);
 
   useEffect(() => {
     if (!referenceKeypoints || !liveKeypoints) {
@@ -126,7 +203,10 @@ export default function CameraScreen() {
         visibleCount: 0,
         lockedKeyJointCount: 0,
         requiredKeyJointCount: Math.ceil(getPoseConfig(poseType).keyJoints.length * getPoseConfig(poseType).requiredJointsAligned),
+        requiredVisibleKeyJointCount: Math.max(4, Math.ceil(getPoseConfig(poseType).keyJoints.length * 0.6)),
+        hasEnoughVisibleJoints: false,
         isPoseAligned: false,
+        trackingState: liveKeypoints ? 'not_aligned' : 'scanning',
         symmetry: { score: null, insights: [] },
       });
       return;
@@ -138,11 +218,12 @@ export default function CameraScreen() {
       liveKeypoints,
       previousState: alignmentHistoryRef.current,
       now: Date.now(),
+      mirrorLiveX: facing === 'front',
     });
 
     alignmentHistoryRef.current = nextAlignment.joints;
     setAlignmentState(nextAlignment);
-  }, [liveKeypoints, poseType, referenceKeypoints]);
+  }, [facing, liveKeypoints, poseType, referenceKeypoints]);
 
   useEffect(() => {
     if (!alignmentState.isPoseAligned) {
@@ -168,16 +249,68 @@ export default function CameraScreen() {
     }
   };
 
+  const loadCameraSetup = async () => {
+    try {
+      const setupMode = await getAppSetting(CAMERA_SETUP_KEY, 'handheld_front');
+      const storedFacing = await getAppSetting(CAMERA_FACING_KEY, getFacingFromSetup(setupMode));
+      setCameraSetupMode(setupMode);
+      setFacing(storedFacing === 'back' ? 'back' : 'front');
+    } catch (err) {
+      console.error('Failed to load camera setup:', err);
+    }
+  };
+
+  function getFacingFromSetup(setupMode) {
+    return setupMode === 'tripod_back' ? 'back' : 'front';
+  }
+
   const ensureReferenceSkeletonForPose = async (pose, photo) => {
     const referenceData = await getPoseReferenceData(pose.id);
-    const resolvedPoseType = referenceData?.poseType || getPoseTypeForPose(pose);
+    const resolvedPoseType = getPoseTypeForPose(pose);
 
-    if (!referenceData?.poseType) {
+    if (referenceData?.poseType !== resolvedPoseType) {
       await setPoseType(pose.id, resolvedPoseType);
     }
 
     setSelectedPoseType(resolvedPoseType);
-    setReferenceKeypoints(referenceData?.source === 'detected' ? referenceData.keypoints : null);
+    setReferenceSource(referenceData?.source || null);
+
+    if (referenceData?.source === 'template' && photo) {
+      const templateNeedsRefresh = referenceData?.poseType !== resolvedPoseType || !referenceData?.keypoints;
+
+      if (templateNeedsRefresh) {
+        const fallbackKeypoints = createReferenceKeypoints({
+          pose: { ...pose, pose_type: resolvedPoseType },
+          width: photo.width || 1080,
+          height: photo.height || 1440,
+        });
+
+        await savePoseReferenceKeypoints(pose.id, fallbackKeypoints, 'template');
+        setReferenceKeypoints(fallbackKeypoints);
+        setReferenceSource('template');
+        return;
+      }
+    }
+
+    if (referenceData?.keypoints) {
+      setReferenceKeypoints(referenceData.keypoints);
+      return;
+    }
+
+    if (!photo) {
+      setReferenceKeypoints(null);
+      return;
+    }
+
+    const fallbackKeypoints = createReferenceKeypoints({
+      pose: { ...pose, pose_type: resolvedPoseType },
+      width: photo.width || 1080,
+      height: photo.height || 1440,
+    });
+
+    await savePoseReferenceKeypoints(pose.id, fallbackKeypoints, 'template');
+    setReferenceKeypoints(fallbackKeypoints);
+    setReferenceSource('template');
   };
 
   const loadPoses = async () => {
@@ -211,11 +344,13 @@ export default function CameraScreen() {
       } else {
         setSelectedPoseType(getPoseTypeForPose(pose));
         setReferenceKeypoints(null);
+        setReferenceSource(null);
       }
     } catch (err) {
       console.error('Failed to load pose reference:', err);
       setReferencePhoto(null);
       setReferenceKeypoints(null);
+      setReferenceSource(null);
     }
   };
 
@@ -223,7 +358,7 @@ export default function CameraScreen() {
     setSelectedPose(pose);
     setShowPoseSelector(false);
     alignmentHistoryRef.current = {};
-    simulatorStateRef.current = null;
+    liveSkeletonRef.current = null;
     await loadReferenceForPose(pose);
   };
 
@@ -237,11 +372,69 @@ export default function CameraScreen() {
   };
 
   const handleGuideToggle = async () => {
-    if (!referenceKeypoints) return;
+    if (!referencePhoto) {
+      Alert.alert(
+        'Add a Reference Pose',
+        'Import or capture a clean bodybuilding reference photo for this pose before turning on pose guidance.',
+      );
+      return;
+    }
+
+    if (!referenceKeypoints) {
+      Alert.alert(
+        'Pose Detection Unavailable',
+        'This pose has a saved reference photo, but this build does not have extracted skeleton keypoints for it yet. Re-import a clearer bodybuilding reference photo after the native pose detector is installed.',
+      );
+      return;
+    }
+
     await persistGuidancePreference(!guidanceEnabled);
   };
 
   const handleCapture = async () => {
+    if (!cameraRef.current || capturing || !selectedPose || !cameraReady) return;
+
+    const referencePhotoId = await getPoseReferencePhotoId(selectedPose.id);
+    if (!referencePhotoId) {
+      Alert.alert(
+        `${selectedPose.name} reference`,
+        'This category needs a first reference photo before normal progress shots. Use a clear bodybuilding pose, keep your full body visible, and hold the pose steady so the joints line up correctly.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Take reference',
+            onPress: () => captureReferencePhoto(),
+          },
+        ]
+      );
+      return;
+    }
+
+    await captureProgressPhoto();
+  };
+
+  const captureProgressPhoto = async () => {
+    setCapturing(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.9,
+        skipProcessing: false,
+      });
+
+      const saved = await saveImageToAppDir(photo.uri, selectedPose.id);
+      await savePhoto(selectedPose.id, saved.filePath, saved.width, saved.height);
+
+      await loadReferenceForPose(selectedPose);
+      loadPoses();
+    } catch (err) {
+      console.error('Capture failed:', err);
+      Alert.alert('Error', 'Failed to capture photo. Please try again.');
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  const captureReferencePhoto = async () => {
     if (!cameraRef.current || capturing || !selectedPose || !cameraReady) return;
 
     setCapturing(true);
@@ -252,26 +445,43 @@ export default function CameraScreen() {
       });
 
       const saved = await saveImageToAppDir(photo.uri, selectedPose.id);
-      const photoId = await savePhoto(selectedPose.id, saved.filePath, saved.width, saved.height);
-      const referencePhotoId = await getPoseReferencePhotoId(selectedPose.id);
+      const capturedAt = new Date().toISOString();
+      const photoId = await savePhoto(
+        selectedPose.id,
+        saved.filePath,
+        saved.width,
+        saved.height,
+        capturedAt
+      );
 
-      if (!referencePhotoId) {
-        const nextPoseType = getPoseTypeForPose(selectedPose);
-        await setPoseReferencePhoto(selectedPose.id, photoId);
-        await setPoseType(selectedPose.id, nextPoseType);
-        await clearPoseReferenceKeypoints(selectedPose.id);
-        await generateGhostAssetForPhoto({
-          id: photoId,
-          pose_id: selectedPose.id,
-          file_path: saved.filePath,
-        });
-      }
+      const savedPhoto = {
+        id: photoId,
+        pose_id: selectedPose.id,
+        file_path: saved.filePath,
+        captured_at: capturedAt,
+        width: saved.width,
+        height: saved.height,
+      };
+
+      const referenceResult = await saveReferencePhotoForPose(selectedPose, savedPhoto);
 
       await loadReferenceForPose(selectedPose);
       loadPoses();
+
+      if (referenceResult.referenceSource === 'template') {
+        Alert.alert(
+          'Reference needs a clearer pose',
+          referenceResult.warning || 'This first reference photo was saved with a fallback skeleton. Retake it with a cleaner bodybuilding pose so your alignment matches your joints.'
+        );
+      } else {
+        Alert.alert(
+          'Reference saved',
+          'This pose now has a reference anchor. Keep using the same bodybuilding shape for future alignment and progress photos.'
+        );
+      }
     } catch (err) {
-      console.error('Capture failed:', err);
-      Alert.alert('Error', 'Failed to capture photo. Please try again.');
+      console.error('Reference capture failed:', err);
+      Alert.alert('Error', 'Failed to save the reference photo. Please try again.');
     } finally {
       setCapturing(false);
     }
@@ -313,6 +523,8 @@ export default function CameraScreen() {
 
     setCapturing(true);
     try {
+      let fallbackReferenceSaved = false;
+
       for (const asset of result.assets) {
         const saved = await saveImageToAppDir(asset.uri, selectedPose.id);
         const capturedAt = parseExifDate(asset.exif?.DateTimeOriginal) || null;
@@ -320,15 +532,15 @@ export default function CameraScreen() {
         const referencePhotoId = await getPoseReferencePhotoId(selectedPose.id);
 
         if (!referencePhotoId) {
-          const nextPoseType = getPoseTypeForPose(selectedPose);
-          await setPoseReferencePhoto(selectedPose.id, photoId);
-          await setPoseType(selectedPose.id, nextPoseType);
-          await clearPoseReferenceKeypoints(selectedPose.id);
-          await generateGhostAssetForPhoto({
+          const referenceResult = await saveReferencePhotoForPose(selectedPose, {
             id: photoId,
             pose_id: selectedPose.id,
             file_path: saved.filePath,
+            captured_at: capturedAt || new Date().toISOString(),
+            width: saved.width,
+            height: saved.height,
           });
+          fallbackReferenceSaved = fallbackReferenceSaved || referenceResult.referenceSource === 'template';
         }
       }
 
@@ -336,7 +548,12 @@ export default function CameraScreen() {
       loadPoses();
 
       const count = result.assets.length;
-      Alert.alert('Imported', `${count} photo${count > 1 ? 's' : ''} added to ${selectedPose.name}.`);
+      Alert.alert(
+        'Imported',
+        fallbackReferenceSaved
+          ? `${count} photo${count > 1 ? 's' : ''} added to ${selectedPose.name}. The first reference used a fallback skeleton, so replace it with a cleaner bodybuilding pose when you can.`
+          : `${count} photo${count > 1 ? 's' : ''} added to ${selectedPose.name}.`
+      );
     } catch (err) {
       console.error('Gallery import failed:', err);
       Alert.alert('Error', 'Failed to import photos. Please try again.');
@@ -350,33 +567,55 @@ export default function CameraScreen() {
   };
 
   const poseConfig = getPoseConfig(poseType);
-  const detectorMode = __DEV__ ? 'simulated' : 'native_required';
   const poseReferenceReady = Boolean(referencePhoto && referenceKeypoints);
   const hasReferencePhotoOnly = Boolean(referencePhoto && !referenceKeypoints);
+  const referenceNeedsRebuild = referenceSource === 'template';
   const liveTrackingVisible = Boolean(liveKeypoints);
   const guideStatusTitle = !referencePhoto
-    ? 'Add a reference pose'
-    : hasReferencePhotoOnly
+    ? 'Set your first reference'
+    : referenceNeedsRebuild
+      ? 'Reference needs a clearer pose'
+      : hasReferencePhotoOnly
       ? 'Reference photo saved'
-    : !guidanceEnabled
-      ? 'Guidance hidden'
-      : detectorMode === 'simulated'
-        ? 'Alignment preview active'
-        : 'Reference skeleton ready';
+      : !guidanceEnabled
+        ? 'Guidance hidden'
+        : alignmentState.trackingState === 'move_into_frame'
+          ? 'Move into frame'
+          : liveDetectionActive
+          ? 'Live pose tracking active'
+          : 'Reference skeleton ready';
   const guideStatusBody = !referencePhoto
-    ? 'Import or capture a clean reference photo for this pose so the app can build its pose guide.'
+    ? 'This category does not have an anchor photo yet. Capture a clean bodybuilding pose with your full body visible so the app can build its pose guide.'
+    : referenceNeedsRebuild
+      ? 'This pose is using a fallback skeleton. Retake the reference with a cleaner bodybuilding pose so the joint alignment matches your actual shape.'
     : hasReferencePhotoOnly
-      ? 'This pose does not have extracted keypoints yet, so the app will not draw a skeleton. That is intentional until real pose detection is wired in.'
-    : !guidanceEnabled
-      ? 'Turn guidance back on when you want live joint feedback during your setup.'
-      : detectorMode === 'simulated'
-        ? 'Development mode is animating the live skeleton so you can tune the camera UX before a native detector is connected.'
-        : 'This Expo CameraView build cannot read camera frames for live pose inference yet. The alignment engine and overlay are ready for a native detector feed.';
+      ? 'This pose has a saved reference photo, but no skeleton data yet. Re-import a cleaner bodybuilding reference photo to rebuild its pose guide.'
+      : !guidanceEnabled
+        ? 'Turn guidance back on when you want live joint feedback during your setup.'
+        : liveDetectionActive && alignmentState.isPoseAligned
+          ? 'You are aligned to the reference skeleton. Hold steady to capture this pose.'
+          : alignmentState.trackingState === 'move_into_frame'
+          ? 'Move into frame until the camera can see enough of your body to compare the pose.'
+          : liveDetectionActive
+          ? 'You are not aligned yet. Move your joints to match the reference skeleton, then hold steady for live feedback.'
+          : 'Waiting for a readable body pose in the camera view. Keep your full body visible and hold the phone steady for live joint feedback.';
+  const cameraSetupHint = cameraSetupMode === 'tripod_back'
+    ? 'Onboarding set this camera to back-facing for a stable setup.'
+    : 'Onboarding set this camera to front-facing for a mirrored setup.';
   const symmetryScore = alignmentState.symmetry.score;
   const symmetryLabel = symmetryScore === null
     ? 'Symmetry waiting'
     : `${Math.round(symmetryScore * 100)}% symmetry`;
   const progressPercent = Math.round(alignmentState.progress * 100);
+  const helperPillLabel = !referencePhoto
+    ? 'Setup'
+    : alignmentState.isPoseAligned
+      ? 'Aligned'
+      : alignmentState.trackingState === 'move_into_frame'
+        ? 'Move into frame'
+        : liveTrackingVisible
+        ? 'Not aligned'
+        : 'Scanning';
 
   if (!permission) {
     return (
@@ -476,23 +715,24 @@ export default function CameraScreen() {
               <View style={styles.helperHeader}>
                 <View style={styles.helperTitleRow}>
                   <Ionicons
-                    name={guidanceEnabled ? 'body-outline' : 'eye-off-outline'}
+                    name={!referencePhoto ? 'camera-outline' : guidanceEnabled ? 'body-outline' : 'eye-off-outline'}
                     size={16}
-                    color={guidanceEnabled ? colors.secondary : colors.textMuted}
+                    color={!referencePhoto ? colors.warning : guidanceEnabled ? colors.secondary : colors.textMuted}
                   />
                   <Text style={styles.helperTitle}>{guideStatusTitle}</Text>
                 </View>
                 <View style={[styles.helperPill, alignmentState.isPoseAligned && styles.helperPillActive]}>
                   <Text style={[styles.helperPillText, alignmentState.isPoseAligned && styles.helperPillTextActive]}>
-                    {alignmentState.isPoseAligned ? 'Locked' : `${progressPercent}%`}
+                    {helperPillLabel}
                   </Text>
                 </View>
               </View>
               <Text style={styles.helperBody}>{guideStatusBody}</Text>
+              <Text style={styles.helperNote}>{cameraSetupHint}</Text>
             </View>
           ))}
 
-          {poseReferenceReady && guidanceEnabled && (
+          {poseReferenceReady && guidanceEnabled && liveTrackingVisible && (
             <View style={styles.statsCard}>
               <View style={styles.statRow}>
                 <Text style={styles.statLabel}>Locked joints</Text>
@@ -529,12 +769,12 @@ export default function CameraScreen() {
             <Pressable
               style={styles.iconButton}
               onPress={handleGuideToggle}
-              disabled={!poseReferenceReady}
+              disabled={!guidancePreferenceLoaded}
             >
               <Ionicons
-                name={!poseReferenceReady ? 'body-outline' : guidanceEnabled ? 'eye-outline' : 'body-outline'}
+                name={!referencePhoto ? 'body-outline' : !referenceKeypoints ? 'alert-circle-outline' : guidanceEnabled ? 'eye-outline' : 'body-outline'}
                 size={26}
-                color={poseReferenceReady ? colors.text : colors.textMuted}
+                color={!referencePhoto || !guidancePreferenceLoaded ? colors.textMuted : !referenceKeypoints ? colors.warning : colors.text}
               />
             </Pressable>
           </View>
@@ -593,7 +833,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.md,
     zIndex: 100,
   },
@@ -625,7 +865,7 @@ const styles = StyleSheet.create({
   },
   dropdown: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 110 : 90,
+    top: 110,
     left: spacing.md,
     right: spacing.md,
     backgroundColor: 'rgba(19, 19, 26, 0.96)',
@@ -656,7 +896,7 @@ const styles = StyleSheet.create({
   },
   modeBadge: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 110 : 90,
+    top: 110,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
@@ -677,7 +917,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingBottom: Platform.OS === 'ios' ? 100 : 72,
+    paddingBottom: 100,
     paddingTop: spacing.md,
     alignItems: 'center',
     zIndex: 100,
@@ -714,6 +954,12 @@ const styles = StyleSheet.create({
   helperBody: {
     ...typography.bodySmall,
     lineHeight: 20,
+  },
+  helperNote: {
+    ...typography.caption,
+    color: colors.textMuted,
+    textTransform: 'none',
+    lineHeight: 18,
   },
   helperPill: {
     borderRadius: radius.full,

@@ -45,6 +45,51 @@ const baseTolerance = {
 };
 
 export const POSE_LIBRARY = {
+  front_relaxed: {
+    id: 'front_relaxed',
+    label: 'Front Relaxed',
+    requiredJointsAligned: 0.72,
+    holdTimeMs: 500,
+    keyJoints: [
+      'leftShoulder',
+      'rightShoulder',
+      'leftElbow',
+      'rightElbow',
+      'leftHip',
+      'rightHip',
+      'leftKnee',
+      'rightKnee',
+    ],
+    tolerances: {
+      ...baseTolerance,
+      leftShoulder: 0.07,
+      rightShoulder: 0.07,
+      leftElbow: 0.08,
+      rightElbow: 0.08,
+      leftWrist: 0.085,
+      rightWrist: 0.085,
+    },
+    symmetryPairs: [
+      ['leftShoulder', 'rightShoulder'],
+      ['leftElbow', 'rightElbow'],
+      ['leftHip', 'rightHip'],
+    ],
+    template: {
+      nose: { x: 0.5, y: 0.15 },
+      leftShoulder: { x: 0.37, y: 0.28 },
+      rightShoulder: { x: 0.63, y: 0.28 },
+      leftElbow: { x: 0.29, y: 0.4 },
+      rightElbow: { x: 0.71, y: 0.4 },
+      leftWrist: { x: 0.24, y: 0.54 },
+      rightWrist: { x: 0.76, y: 0.54 },
+      leftHip: { x: 0.44, y: 0.52 },
+      rightHip: { x: 0.56, y: 0.52 },
+      leftKnee: { x: 0.46, y: 0.72 },
+      rightKnee: { x: 0.54, y: 0.72 },
+      leftAnkle: { x: 0.47, y: 0.92 },
+      rightAnkle: { x: 0.53, y: 0.92 },
+    },
+  },
   front_lat_spread: {
     id: 'front_lat_spread',
     label: 'Front Lat Spread',
@@ -302,16 +347,16 @@ export const POSE_LIBRARY = {
 
 export function inferPoseTypeFromName(name = '') {
   const normalized = name.trim().toLowerCase();
+  if (normalized.includes('front') && normalized.includes('relaxed')) return 'front_relaxed';
   if (normalized.includes('lat') && normalized.includes('front')) return 'front_lat_spread';
   if (normalized.includes('side chest')) return 'side_chest';
   if (normalized.includes('back') && normalized.includes('double')) return 'back_double_biceps';
   if (normalized.includes('front') && normalized.includes('double')) return 'front_double_biceps';
   if (normalized.includes('abs')) return 'abs_thigh';
   if (normalized.includes('most muscular')) return 'most_muscular';
-  return 'front_double_biceps';
+  return null;
 }
 
 export function getPoseConfig(poseType) {
-  return POSE_LIBRARY[poseType] || POSE_LIBRARY.front_double_biceps;
+  return POSE_LIBRARY[poseType] || POSE_LIBRARY.front_relaxed;
 }
-

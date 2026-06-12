@@ -15,7 +15,6 @@ import {
   Image,
   Modal,
   Dimensions,
-  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,10 +28,9 @@ import {
   deletePhoto,
   savePhoto,
   getPoseReferencePhotoId,
-  setPoseReferencePhoto,
 } from '../database/db';
 import { deleteImage, saveImageToAppDir } from '../utils/storage';
-import { generateGhostAssetForPhoto } from '../utils/backgroundRemoval';
+import { saveReferencePhotoForPose } from '../utils/referencePhotos';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -95,25 +93,31 @@ export default function TimelineScreen({ route, navigation }) {
 
     setImporting(true);
     try {
+      let fallbackReferenceSaved = false;
       for (const asset of result.assets) {
         const saved = await saveImageToAppDir(asset.uri, pose.id);
         const capturedAt = parseExifDate(asset.exif?.DateTimeOriginal) || null;
         const photoId = await savePhoto(pose.id, saved.filePath, saved.width, saved.height, capturedAt);
         const referencePhotoId = await getPoseReferencePhotoId(pose.id);
         if (!referencePhotoId) {
-          await setPoseReferencePhoto(pose.id, photoId);
-          await generateGhostAssetForPhoto({
+          const referenceResult = await saveReferencePhotoForPose(pose, {
             id: photoId,
             pose_id: pose.id,
             file_path: saved.filePath,
+            captured_at: capturedAt || new Date().toISOString(),
+            width: saved.width,
+            height: saved.height,
           });
+          fallbackReferenceSaved = fallbackReferenceSaved || referenceResult.referenceSource === 'template';
         }
       }
       await loadPhotos();
       const count = result.assets.length;
       Alert.alert(
         'Imported!',
-        `${count} photo${count > 1 ? 's' : ''} added to ${pose.name}.`,
+        fallbackReferenceSaved
+          ? `${count} photo${count > 1 ? 's' : ''} added to ${pose.name}. The first reference used a fallback skeleton, so replace it with a clearer bodybuilding pose when you can.`
+          : `${count} photo${count > 1 ? 's' : ''} added to ${pose.name}.`,
       );
     } catch (err) {
       console.error('Gallery import failed:', err);
@@ -126,8 +130,40 @@ export default function TimelineScreen({ route, navigation }) {
   const closeViewer = useCallback(() => {
     viewerClosingRef.current = true;
     setViewerIndex(null);
-    setTimeout(() => { viewerClosingRef.current = false; }, 500);
+    setTimeout(() => { viewerClosingRef.current = false; }, 800);
   }, []);
+
+  const handleViewerDelete = () => {
+    const photo = photos[viewerIndex];
+    if (!photo) return;
+    Alert.alert(
+      'Delete Photo',
+      'Delete this photo? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const deletedPhoto = await deletePhoto(photo.id);
+              if (deletedPhoto?.file_path) await deleteImage(deletedPhoto.file_path);
+              if (deletedPhoto?.ghost_file_path) await deleteImage(deletedPhoto.ghost_file_path);
+              const newPhotos = photos.filter(p => p.id !== photo.id);
+              if (newPhotos.length === 0) {
+                setViewerIndex(null);
+              } else {
+                setViewerIndex(Math.min(viewerIndex, newPhotos.length - 1));
+              }
+              await loadPhotos();
+            } catch (err) {
+              Alert.alert('Error', 'Failed to delete photo.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const handlePhotoPress = (photo) => {
     if (viewerClosingRef.current) return;
@@ -348,7 +384,6 @@ export default function TimelineScreen({ route, navigation }) {
         statusBarTranslucent
       >
         <View style={styles.viewer}>
-          <Pressable style={styles.viewerBackdrop} onPress={closeViewer} />
 
           {/* Close button */}
           <Pressable
@@ -356,6 +391,14 @@ export default function TimelineScreen({ route, navigation }) {
             onPress={closeViewer}
           >
             <Ionicons name="close" size={26} color={colors.text} />
+          </Pressable>
+
+          {/* Delete button */}
+          <Pressable
+            style={styles.viewerDelete}
+            onPress={handleViewerDelete}
+          >
+            <Ionicons name="trash-outline" size={22} color="#ff5252" />
           </Pressable>
 
           {/* Photo count */}
@@ -413,7 +456,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.md,
     gap: spacing.sm,
@@ -560,12 +603,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     justifyContent: 'center',
   },
-  viewerBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-  },
   viewerClose: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 56 : 36,
+    top: 56,
     right: spacing.md,
     width: 44,
     height: 44,
@@ -575,9 +615,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 20,
   },
+  viewerDelete: {
+    position: 'absolute',
+    top: 56,
+    left: spacing.md,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,82,82,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+  },
   viewerCounter: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    top: 60,
     alignSelf: 'center',
     backgroundColor: 'rgba(255,255,255,0.12)',
     paddingHorizontal: spacing.md,
@@ -602,7 +654,7 @@ const styles = StyleSheet.create({
   },
   viewerInfo: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 50 : 30,
+    bottom: 50,
     alignItems: 'center',
     paddingHorizontal: spacing.xl,
   },

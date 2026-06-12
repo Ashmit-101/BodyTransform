@@ -5,7 +5,7 @@
  * Uses native ML Kit pose detection when available.
  */
 
-import { NativeModules, Platform } from 'react-native';
+import { NativeModules } from 'react-native';
 
 import { JOINTS } from '../constants/poseAlignment';
 
@@ -45,7 +45,7 @@ async function initializePoseDetector() {
 
     detectorInstance = {
       ready: Boolean(nativeModule),
-      type: nativeModule ? `ml-kit-native-${Platform.OS}` : 'unavailable',
+      type: nativeModule ? 'ml-kit-native-ios' : 'unavailable',
       supportsStaticImageDetection: Boolean(nativeModule),
       detectPoseInImage: nativeModule?.detectPoseInImage?.bind(nativeModule),
       releaseDetector: nativeModule?.releaseDetector?.bind(nativeModule),

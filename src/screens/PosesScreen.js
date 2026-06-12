@@ -16,7 +16,6 @@ import {
   TextInput,
   Modal,
   KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -153,7 +152,7 @@ export default function PosesScreen({ navigation }) {
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={'padding'}
         >
           <Pressable style={styles.modalDismiss} onPress={() => setShowAddModal(false)} />
           <View style={styles.modalContent}>
@@ -218,7 +217,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: 60,
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
   },
@@ -286,7 +285,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     padding: spacing.lg,
-    paddingBottom: Platform.OS === 'ios' ? 40 : spacing.lg,
+    paddingBottom: 40,
   },
   modalHandle: {
     width: 40,

@@ -11,6 +11,7 @@ export default function PoseReferencePreview({
   poseLabel,
   emptyLabel = 'No reference selected',
   statusLabel = null,
+  referenceSource = null,
   style,
 }) {
   if (!photo) {
@@ -43,7 +44,7 @@ export default function PoseReferencePreview({
         </View>
       ) : null}
       {statusLabel ? (
-        <View style={styles.statusPill}>
+        <View style={[styles.statusPill, referenceSource === 'template' && styles.statusPillWarning]}>
           <Text style={styles.statusPillText}>{statusLabel}</Text>
         </View>
       ) : null}
@@ -86,6 +87,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     backgroundColor: 'rgba(10, 10, 15, 0.78)',
+  },
+  statusPillWarning: {
+    backgroundColor: 'rgba(150, 90, 0, 0.82)',
   },
   statusPillText: {
     ...typography.caption,

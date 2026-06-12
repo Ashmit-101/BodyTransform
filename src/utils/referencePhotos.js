@@ -9,7 +9,7 @@ import {
   setPoseType,
 } from '../database/db';
 import { generateGhostAssetForPhoto } from './backgroundRemoval';
-import { getPoseTypeForPose } from './poseAlignment';
+import { createReferenceKeypoints, getPoseTypeForPose } from './poseAlignment';
 import {
   detectPoseInImage,
   getPoseDetectorStatus,
@@ -21,6 +21,65 @@ function parseExifDate(exifDate) {
   const parts = exifDate.split(' ');
   if (parts.length < 2) return null;
   return `${parts[0].replace(/:/g, '-')} ${parts[1]}`;
+}
+
+export async function saveReferencePhotoForPose(pose, savedPhoto) {
+  const backgroundRemoval = await generateGhostAssetForPhoto(savedPhoto);
+  const poseType = getPoseTypeForPose(pose);
+  await setPoseReferencePhoto(pose.id, savedPhoto.id);
+  await setPoseType(pose.id, poseType);
+
+  // Extract skeleton keypoints from the reference photo
+  let referenceKeypoints = null;
+  let detectionWarning = null;
+  let keypointSource = null;
+
+  try {
+    const detectorStatus = await getPoseDetectorStatus();
+    if (detectorStatus.supportsStaticImageDetection) {
+      const detectedKeypoints = await detectPoseInImage(
+        savedPhoto.file_path,
+        savedPhoto.width,
+        savedPhoto.height
+      );
+
+      if (detectedKeypoints && validateExtractedKeypoints(detectedKeypoints)) {
+        referenceKeypoints = detectedKeypoints;
+        keypointSource = 'detected';
+      } else {
+        detectionWarning = 'Could not read the pose clearly. BodyTransform saved a fallback skeleton, but this reference should be replaced with a cleaner bodybuilding pose.';
+      }
+    } else {
+      detectionWarning = 'Native pose detection is not installed in this build, so BodyTransform saved a fallback skeleton. Replace it with a clearer bodybuilding reference photo when you can.';
+    }
+  } catch (err) {
+    console.warn('Pose detection failed:', err);
+    detectionWarning = 'Pose detection hit an error, so BodyTransform saved a fallback skeleton. Replace it with a clearer bodybuilding reference photo when you can.';
+  }
+
+  if (!referenceKeypoints) {
+    referenceKeypoints = createReferenceKeypoints({
+      pose,
+      width: savedPhoto.width,
+      height: savedPhoto.height,
+    });
+    keypointSource = 'template';
+  }
+
+  if (referenceKeypoints) {
+    await savePoseReferenceKeypoints(pose.id, referenceKeypoints, keypointSource);
+  }
+
+  const finalPhoto = await getPhotoById(savedPhoto.id);
+
+  return {
+    status: 'success',
+    photo: finalPhoto || savedPhoto,
+    warning: detectionWarning || backgroundRemoval.warning,
+    poseType,
+    referenceKeypoints,
+    referenceSource: keypointSource,
+  };
 }
 
 export async function importReferencePhotoForPose(pose) {
@@ -60,50 +119,5 @@ export async function importReferencePhotoForPose(pose) {
     height: saved.height,
   };
 
-  const backgroundRemoval = await generateGhostAssetForPhoto(savedPhoto);
-
-  const poseType = getPoseTypeForPose(pose);
-  await setPoseReferencePhoto(pose.id, photoId);
-  await setPoseType(pose.id, poseType);
-
-  // Extract skeleton keypoints from the reference photo
-  let referenceKeypoints = null;
-  let detectionWarning = null;
-  let detectionUnavailable = false;
-
-  try {
-    const detectorStatus = await getPoseDetectorStatus();
-    if (!detectorStatus.supportsStaticImageDetection) {
-      detectionUnavailable = true;
-      detectionWarning = 'Reference pose extraction is not installed in this build yet.';
-    }
-
-    if (!detectionUnavailable) {
-      const detectedKeypoints = await detectPoseInImage(
-        saved.filePath,
-        saved.width,
-        saved.height
-      );
-
-      if (detectedKeypoints && validateExtractedKeypoints(detectedKeypoints)) {
-        await savePoseReferenceKeypoints(pose.id, detectedKeypoints, 'detected');
-        referenceKeypoints = detectedKeypoints;
-      } else {
-        detectionWarning = 'Could not detect pose clearly. Please upload a clearer reference photo.';
-      }
-    }
-  } catch (err) {
-    console.warn('Pose detection failed:', err);
-    detectionWarning = 'Pose detection encountered an error while reading the reference photo.';
-  }
-
-  const finalPhoto = await getPhotoById(photoId);
-
-  return {
-    status: 'success',
-    photo: finalPhoto || savedPhoto,
-    warning: detectionWarning || backgroundRemoval.warning,
-    poseType,
-    referenceKeypoints,
-  };
+  return saveReferencePhotoForPose(pose, savedPhoto);
 }

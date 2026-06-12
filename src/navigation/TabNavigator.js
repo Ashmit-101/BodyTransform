@@ -5,12 +5,13 @@
  */
 
 import React from 'react';
-import { StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 
 import CameraScreen from '../screens/CameraScreen';
+import CaptureScreen from '../screens/CaptureScreen';
 import PosesScreen from '../screens/PosesScreen';
 import TimelineScreen from '../screens/TimelineScreen';
 import CompareScreen from '../screens/CompareScreen';
@@ -50,6 +51,8 @@ export default function TabNavigator({ onRequestOnboarding }) {
           let iconName;
           if (route.name === 'CameraTab') {
             iconName = focused ? 'camera' : 'camera-outline';
+          } else if (route.name === 'GhostTab') {
+            iconName = focused ? 'scan-circle' : 'scan-circle-outline';
           } else if (route.name === 'PosesTab') {
             iconName = focused ? 'grid' : 'grid-outline';
           } else if (route.name === 'CalendarTab') {
@@ -70,6 +73,11 @@ export default function TabNavigator({ onRequestOnboarding }) {
         name="CameraTab"
         component={CameraScreen}
         options={{ tabBarLabel: 'Camera' }}
+      />
+      <Tab.Screen
+        name="GhostTab"
+        component={CaptureScreen}
+        options={{ tabBarLabel: 'Ghost' }}
       />
       <Tab.Screen
         name="PosesTab"
@@ -96,9 +104,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(10, 10, 15, 0.92)',
     borderTopWidth: 1,
     borderTopColor: colors.cardBorder,
-    height: Platform.OS === 'ios' ? 88 : 64,
+    height: 88,
     paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 8,
+    paddingBottom: 28,
     position: 'absolute',
     elevation: 0,
   },

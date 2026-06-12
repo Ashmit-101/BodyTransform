@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "BodyTransform",
+    "slug": "BodyTransform",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0F"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "deploymentTarget": "16.0",
+      "infoPlist": {
+        "NSCameraUsageDescription": "BodyTransform needs camera access to capture your gym progress photos.",
+        "NSPhotoLibraryUsageDescription": "BodyTransform can save progress photos to your photo library."
+      },
+      "bundleIdentifier": "com.ajmacmini.BodyTransform"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "BodyTransform needs camera access to capture your gym progress photos."
+        }
+      ],
+      "expo-sqlite"
+    ]
+  }
+}
